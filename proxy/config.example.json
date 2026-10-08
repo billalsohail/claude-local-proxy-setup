@@ -1,0 +1,22 @@
+{
+  "port": 8082,
+  "ollama_base_url": "http://localhost:11434",
+  "preferred_model": "qwen3.5:latest",
+  "fallback_model": "mistral:latest",
+  "char_threshold": 3000,
+  "anthropic_base_url": "https://api.anthropic.com",
+  "route_haiku_to_ollama": true,
+  "orchestrator_mode": false,
+  "ecc_path": "",
+  "orchestrator_ceiling": 15000,
+  "refinement_threshold": 500,
+  "max_subtasks": 5,
+  "ollama_think": false,
+  "decomp_max_tokens": 768,
+  "min_viable_draft_chars": 20,
+  "intent_routing_mode": "off",
+  "intent_routing_live_pct": 0,
+  "shadow_validation_sample_rate": 0.3,
+  "mid_conv_routing_mode": "safe-only",
+  "mid_conv_live_pct": 0
+}

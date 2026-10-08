@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ollama Proxy — Usage Dashboard</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f7f8;
+    --card: #ffffff;
+    --border: #e3e3e6;
+    --text: #1a1a1e;
+    --muted: #6b6b74;
+    --local: #2f9e64;
+    --anthropic: #7c6ce0;
+    --danger: #d1495b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16161a;
+      --card: #1f1f24;
+      --border: #303038;
+      --text: #eaeaee;
+      --muted: #9a9aa2;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: 24px;
+  }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .card .label { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+  .card .value { font-size: 22px; font-weight: 600; }
+  .card .value.local { color: var(--local); }
+  section {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin-bottom: 16px;
+  }
+  section h2 { font-size: 13px; font-weight: 600; margin: 0 0 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .legend { display: flex; gap: 16px; font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  tr:last-child td { border-bottom: none; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .updated { color: var(--muted); font-size: 11px; text-align: right; margin-top: 8px; }
+  .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+  .flag { color: var(--danger); }
+</style>
+</head>
+<body>
+  <h1>Ollama Proxy — Usage Dashboard</h1>
+  <div class="sub" id="dateLabel">Loading…</div>
+
+  <div class="cards">
+    <div class="card"><div class="label">Requests today</div><div class="value" id="cTotal">—</div></div>
+    <div class="card"><div class="label">Local %</div><div class="value local" id="cLocalPct">—</div></div>
+    <div class="card"><div class="label">Est. tokens saved</div><div class="value" id="cTokens">—</div></div>
+    <div class="card"><div class="label">Est. cost saved</div><div class="value" id="cCost">—</div></div>
+    <div class="card"><div class="label">All-time local %</div><div class="value" id="cAllTimeLocal">—</div></div>
+  </div>
+
+  <section>
+    <h2>Hourly split — local vs Anthropic</h2>
+    <div class="legend">
+      <span><i class="swatch" style="background:var(--local)"></i>Local (Ollama / orchestrated)</span>
+      <span><i class="swatch" style="background:var(--anthropic)"></i>Anthropic</span>
+    </div>
+    <svg id="chart" width="100%" height="180" viewBox="0 0 960 180" preserveAspectRatio="none"></svg>
+  </section>
+
+  <section>
+    <h2>Routing reasons (today)</h2>
+    <table id="reasonsTable"><tbody></tbody></table>
+    <div class="empty" id="reasonsEmpty" hidden>No requests yet today.</div>
+  </section>
+
+  <section>
+    <h2>ECC agents used (today)</h2>
+    <table id="agentsTable"><tbody></tbody></table>
+    <div class="empty" id="agentsEmpty" hidden>No orchestrated requests yet today.</div>
+  </section>
+
+  <section>
+    <h2>Mid-conversation safe-slice</h2>
+    <table><tbody id="safeSliceBody"></tbody></table>
+  </section>
+
+  <section>
+    <h2>Shadow-validation accuracy (today, by stage)</h2>
+    <table id="shadowTable">
+      <thead><tr><th>Stage</th><th class="num">Reroutable</th><th class="num">False neg.</th><th class="num">Rate</th><th class="num">Candidate reroutable</th><th class="num">Candidate false neg.</th><th class="num">Candidate rate</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="empty" id="shadowEmpty" hidden>No shadow-scored requests yet today.</div>
+  </section>
+
+  <div class="updated" id="updated"></div>
+
+<script>
+const fmtNum = n => n.toLocaleString();
+const fmtPct = p => (p === null || p === undefined) ? '—' : p + '%';
+
+async function refresh() {
+  try {
+    const [ts, status] = await Promise.all([
+      fetch('/api/timeseries').then(r => r.json()),
+      fetch('/status').then(r => r.json()),
+    ]);
+    render(ts, status);
+  } catch (e) {
+    document.getElementById('updated').textContent = 'refresh failed: ' + e;
+  }
+}
+
+function render(ts, status) {
+  document.getElementById('dateLabel').textContent = ts.date;
+  document.getElementById('cTotal').textContent = fmtNum(ts.total_requests_today);
+  document.getElementById('cLocalPct').textContent = fmtPct(ts.local_pct_today);
+  document.getElementById('cTokens').textContent = fmtNum(ts.est_tokens_saved_today);
+  document.getElementById('cCost').textContent = '$' + ts.est_cost_saved_today.toFixed(4);
+  document.getElementById('cAllTimeLocal').textContent = fmtPct(status.local_pct);
+
+  renderChart(ts.hours);
+  renderKV('reasonsTable', 'reasonsEmpty', ts.reasons_today);
+  renderKV('agentsTable', 'agentsEmpty', ts.agents_today);
+
+  const ss = ts.safe_slice_today;
+  document.getElementById('safeSliceBody').innerHTML = `
+    <tr><td>Rerouted live</td><td class="num">${fmtNum(ss.total)}</td></tr>
+    <tr><td>Escalated to Claude</td><td class="num">${fmtNum(ss.escalated)}</td></tr>
+    <tr><td>Escalation rate</td><td class="num">${fmtPct(ss.escalation_rate)}</td></tr>
+  `;
+
+  const shadowBody = document.querySelector('#shadowTable tbody');
+  const stages = Object.entries(ts.shadow_validation_today || {});
+  document.getElementById('shadowEmpty').hidden = stages.length > 0;
+  shadowBody.innerHTML = stages.map(([stage, s]) => {
+    const flag = (s.false_negative_rate !== null && s.false_negative_rate > 2) ? ' class="flag"' : '';
+    const flagC = (s.false_negative_rate_candidate !== null && s.false_negative_rate_candidate !== undefined && s.false_negative_rate_candidate > 2) ? ' class="flag"' : '';
+    return `<tr><td>${stage}</td><td class="num">${fmtNum(s.reroutable)}</td><td class="num">${fmtNum(s.false_negative)}</td><td class="num"${flag}>${fmtPct(s.false_negative_rate)}</td><td class="num">${fmtNum(s.reroutable_candidate || 0)}</td><td class="num">${fmtNum(s.false_negative_candidate || 0)}</td><td class="num"${flagC}>${fmtPct(s.false_negative_rate_candidate)}</td></tr>`;
+  }).join('');
+
+  document.getElementById('updated').textContent = 'updated ' + new Date().toLocaleTimeString();
+}
+
+function renderKV(tableId, emptyId, pairs) {
+  const body = document.querySelector('#' + tableId + ' tbody');
+  document.getElementById(emptyId).hidden = pairs.length > 0;
+  body.innerHTML = pairs.map(([k, v]) => `<tr><td>${k}</td><td class="num">${fmtNum(v)}</td></tr>`).join('');
+}
+
+function renderChart(hours) {
+  const svg = document.getElementById('chart');
+  const W = 960, H = 180, padBottom = 20;
+  const barW = W / hours.length;
+  const maxTotal = Math.max(1, ...hours.map(h => h.anthropic + h['ollama'] + h['ollama-tools'] + h['orchestrate-single'] + h['orchestrate-project']));
+  let svgParts = [];
+  hours.forEach((h, i) => {
+    const local = h['ollama'] + h['ollama-tools'] + h['orchestrate-single'] + h['orchestrate-project'];
+    const anthropic = h.anthropic;
+    const total = local + anthropic;
+    const scale = (H - padBottom) / maxTotal;
+    const localH = local * scale;
+    const anthropicH = anthropic * scale;
+    const x = i * barW + 1;
+    const w = Math.max(barW - 2, 1);
+    let y = H - padBottom;
+    if (local > 0) {
+      y -= localH;
+      svgParts.push(`<rect x="${x}" y="${y}" width="${w}" height="${localH}" fill="var(--local)"><title>${h.hour}:00 local ${local}</title></rect>`);
+    }
+    if (anthropic > 0) {
+      y -= anthropicH;
+      svgParts.push(`<rect x="${x}" y="${y}" width="${w}" height="${anthropicH}" fill="var(--anthropic)"><title>${h.hour}:00 anthropic ${anthropic}</title></rect>`);
+    }
+    if (h.hour % 3 === 0) {
+      svgParts.push(`<text x="${x + w/2}" y="${H - 4}" font-size="9" text-anchor="middle" fill="var(--muted)">${h.hour}</text>`);
+    }
+  });
+  svg.innerHTML = svgParts.join('');
+}
+
+refresh();
+setInterval(refresh, 15000);
+</script>
+</body>
+</html>
